@@ -672,13 +672,19 @@ func (a *Agent) LogExternalPluginsInfo() {
 var hostAliasesPluginID = ids.PluginID{Category: "metadata", Term: "host_aliases"}
 
 func (a *Agent) updateIDLookupTable(hostAliases types.PluginInventoryDataset) (err error) {
-	newIDLookupTable := make(map[string]string)
+	// Create a new lookup table from the host aliases
+	newIDLookupTable := make(host.IDLookup)
 	for _, hAliases := range hostAliases {
 		if alias, ok := hAliases.(sysinfo.HostAliases); ok {
 			newIDLookupTable[alias.Source] = alias.Alias
 		}
 	}
-	_ = a.setAgentKey(newIDLookupTable)
+
+	// Update the agent's entity key based on the new lookup table
+	if err := a.setAgentKey(newIDLookupTable); err != nil {
+		alog.WithError(err).Error("Failed to update agent key from host aliases")
+	}
+	
 	return
 }
 

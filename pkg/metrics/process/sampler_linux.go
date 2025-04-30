@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,13 +83,21 @@ func (ps *processSampler) Disabled() bool {
 
 // Sample returns samples for all the running processes, decorated with Docker runtime information, if applies.
 func (ps *processSampler) Sample() (results sample.EventBatch, err error) {
+	const topN = 10 // Limit to top 10 processes
+	const CPUPercent =     0.5           // 0.5% CPU usage
+	const MemoryRSSBytes =  5 * 1024 * 1024 // 5MB of RAM
+	const IOReadBytes =    100 * 1024      // 100KB read
+	const IOWriteBytes =   100 * 1024      // 100KB write
+	// Use default thresholds
+	// thresholds := DefaultThresholds
+
 	var elapsedMs int64
 	var elapsedSeconds float64
 	now := time.Now()
 	if ps.hasAlreadyRun {
 		elapsedMs = (now.UnixNano() - ps.lastRun.UnixNano()) / 1000000
+		elapsedSeconds = float64(elapsedMs) / 1000
 	}
-	elapsedSeconds = float64(elapsedMs) / 1000
 	ps.lastRun = now
 
 	pids, err := ps.harvest.Pids()
@@ -97,7 +106,6 @@ func (ps *processSampler) Sample() (results sample.EventBatch, err error) {
 	}
 
 	var containerDecorators []metrics.ProcessDecorator
-
 	for _, containerSampler := range ps.containerSamplers {
 		if !containerSampler.Enabled() {
 			continue
@@ -108,7 +116,6 @@ func (ps *processSampler) Sample() (results sample.EventBatch, err error) {
 			if id := containerIDFromNotRunningErr(err); id != "" {
 				if _, ok := containerNotRunningErrs[id]; !ok {
 					containerNotRunningErrs[id] = struct{}{}
-
 					mplog.WithError(err).Warn("instantiating container sampler process decorator")
 				}
 			} else {
@@ -122,11 +129,9 @@ func (ps *processSampler) Sample() (results sample.EventBatch, err error) {
 		}
 	}
 
+	var processSamples []*types.ProcessSample
 	for _, pid := range pids {
-		var processSample *types.ProcessSample
-		var err error
-
-		processSample, err = ps.harvest.Do(pid, elapsedSeconds)
+		processSample, err := ps.harvest.Do(pid, elapsedSeconds)
 		if err != nil {
 			procLog := mplog.WithError(err)
 			if errors.Is(err, errProcessWithoutRSS) {
@@ -143,7 +148,64 @@ func (ps *processSampler) Sample() (results sample.EventBatch, err error) {
 			}
 		}
 
-		results = append(results, ps.normalizeSample(processSample))
+		processSamples = append(processSamples, processSample)
+
+		// Apply threshold filtering - only include processes that meet at least one threshold criteria
+		meetsIOReadThreshold := false
+		meetsIOWriteThreshold := false
+
+		if processSample.IOTotalReadBytes != nil {
+			meetsIOReadThreshold = *processSample.IOTotalReadBytes >= IOReadBytes
+		}
+
+		if processSample.IOTotalWriteBytes != nil {
+			meetsIOWriteThreshold = *processSample.IOTotalWriteBytes >= IOWriteBytes
+		}
+
+		if processSample.CPUPercent >= CPUPercent ||
+			processSample.MemoryRSSBytes >= MemoryRSSBytes ||
+			meetsIOReadThreshold || meetsIOWriteThreshold {
+			processSamples = append(processSamples, processSample)
+		}
+	}
+
+	// Sort processes based on multiple resource criteria (CPU, Memory, Network)
+	sort.Slice(processSamples, func(i, j int) bool {
+		// Primary sort by CPU usage
+		if processSamples[i].CPUPercent != processSamples[j].CPUPercent {
+			return processSamples[i].CPUPercent > processSamples[j].CPUPercent
+		}
+		// Secondary sort by memory usage
+		if processSamples[i].MemoryRSSBytes != processSamples[j].MemoryRSSBytes {
+			return processSamples[i].MemoryRSSBytes > processSamples[j].MemoryRSSBytes
+		}
+		// Tertiary sort by IO operations (as a proxy for network activity)
+		var totalIOi, totalIOj uint64
+
+		if processSamples[i].IOTotalReadBytes != nil {
+			totalIOi += *processSamples[i].IOTotalReadBytes
+		}
+		if processSamples[i].IOTotalWriteBytes != nil {
+			totalIOi += *processSamples[i].IOTotalWriteBytes
+		}
+
+		if processSamples[j].IOTotalReadBytes != nil {
+			totalIOj += *processSamples[j].IOTotalReadBytes
+		}
+		if processSamples[j].IOTotalWriteBytes != nil {
+			totalIOj += *processSamples[j].IOTotalWriteBytes
+		}
+
+		return totalIOi > totalIOj
+	})
+
+	// Limit to top N processes
+	if len(processSamples) > topN {
+		processSamples = processSamples[:topN]
+	}
+
+	for _, sample := range processSamples {
+		results = append(results, ps.normalizeSample(sample))
 	}
 
 	ps.cache.items.RemoveUntilLen(len(pids))
