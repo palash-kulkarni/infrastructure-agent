@@ -312,18 +312,29 @@ func (s *CloudDetectionSuite) TestDetectSuccessful(c *C) {
 	alibabaHarvester := NewMockHarvester(TypeAlibaba)
 
 	done := make(chan struct{})
+	quit := make(chan struct{}) // Channel to signal goroutine to quit
+
 	go func() {
 		detector.initialize(gcpHarvester, awsHarvester, azureHarvester, alibabaHarvester)
 		for {
-			if detector.isInitialized() {
-				done <- struct{}{}
+			select {
+			case <-quit: // Check if we should exit
+				return
+			default:
+				if detector.isInitialized() {
+					done <- struct{}{}
+					return // Exit the goroutine after signaling
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	}()
 
 	select {
 	case <-done:
+		// Successfully initialized
 	case <-time.After(time.Second):
+		close(quit) // Signal goroutine to quit
 		close(done)
 	}
 
@@ -341,18 +352,29 @@ func (s *CloudDetectionSuite) TestDetectFail(c *C) {
 	alibabaHarvester := NewMockHarvester(TypeAlibaba)
 
 	done := make(chan struct{})
+	quit := make(chan struct{}) // Channel to signal goroutine to quit
+
 	go func() {
 		detector.initialize(awsHarvester, azureHarvester, alibabaHarvester)
 		for {
-			if detector.isInitialized() {
-				done <- struct{}{}
+			select {
+			case <-quit: // Check if we should exit
+				return
+			default:
+				if detector.isInitialized() {
+					done <- struct{}{}
+					return // Exit goroutine after signaling
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	}()
 
 	select {
 	case <-done:
+		// Successfully initialized
 	case <-time.After(time.Second):
+		close(quit) // Signal goroutine to quit
 		close(done)
 	}
 
@@ -411,30 +433,53 @@ func (s *CloudDetectionSuite) TestDetectWithProvider(chk *C) {
 	for _, test := range tests {
 		detector := NewDetector(false, 10, 0, 0, false)
 
-		done := make(chan struct{})
+		// For invalid cloud providers, we don't expect the detector to initialize,
+		// so we need a different approach to check this
+		if test.expected.IsValidCloud() {
+			// For valid providers, we expect initialization to complete
+			done := make(chan struct{})
+			quit := make(chan struct{}) // Channel to signal goroutine to quit
 
-		go func() {
+			go func() {
+				detector.Initialize(WithProvider(Type(test.provider)))
+				for {
+					select {
+					case <-quit: // Check if we should exit
+						return
+					default:
+						if detector.isInitialized() {
+							done <- struct{}{}
+							return // Exit goroutine after signaling
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
+			}()
+
+			select {
+			case <-done:
+				// Successfully initialized
+			case <-time.After(time.Second):
+				// Timeout - this shouldn't happen for valid providers
+				chk.Log("Timeout waiting for detector to initialize with valid provider")
+				close(quit) // Signal goroutine to quit
+				chk.Fail()
+			}
+
+			chk.Assert(detector.getHarvester(), FitsTypeOf, test.harvester)
+			chk.Assert(detector.isInitialized(), Equals, test.initialized)
+			chk.Assert(detector.GetCloudType(), Equals, test.expected)
+		} else {
+			// For invalid providers, just initialize and wait a bit
 			detector.Initialize(WithProvider(Type(test.provider)))
 
-			for {
-				if detector.isInitialized() {
-					done <- struct{}{}
-				}
-			}
-		}()
+			// Give a small amount of time for any immediate initialization that might happen
+			time.Sleep(100 * time.Millisecond)
 
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			close(done)
+			// For invalid providers, we expect initialization to remain false
+			chk.Assert(detector.isInitialized(), Equals, test.initialized)
+			chk.Assert(detector.GetCloudType(), Equals, test.expected)
 		}
-
-		if test.expected.IsValidCloud() {
-			chk.Assert(detector.getHarvester(), FitsTypeOf, test.harvester)
-		}
-
-		chk.Assert(detector.isInitialized(), Equals, test.initialized)
-		chk.Assert(detector.GetCloudType(), Equals, test.expected)
 	}
 }
 

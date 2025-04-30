@@ -5,14 +5,15 @@ package core
 import (
 	"bytes"
 	context2 "context"
-	agentTypes "github.com/newrelic/infrastructure-agent/internal/agent/types"
-	"github.com/newrelic/infrastructure-agent/pkg/plugins/ids"
-	"github.com/newrelic/infrastructure-agent/pkg/sysinfo"
-	"github.com/stretchr/testify/suite"
 	"io/ioutil"
 	"net/http"
 	"testing"
 	"time"
+
+	agentTypes "github.com/newrelic/infrastructure-agent/internal/agent/types"
+	"github.com/newrelic/infrastructure-agent/pkg/plugins/ids"
+	"github.com/newrelic/infrastructure-agent/pkg/sysinfo"
+	"github.com/stretchr/testify/suite"
 
 	"github.com/newrelic/infrastructure-agent/pkg/entity"
 
