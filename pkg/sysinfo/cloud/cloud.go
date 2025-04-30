@@ -111,8 +111,13 @@ func WithProvider(cloudType Type) DetectorOption {
 			detector.setHarvester(NewAlibabaHarvester(detector.disableKeepAlive))
 			detector.finishInit()
 		case TypeNoCloud:
+			// Do not finish init for no cloud providers
 		case TypeInProgress:
+			// Do not finish init for in-progress detections
 		default:
+			// For invalid providers, do not set as initialized
+			// This ensures TestDetectWithProvider validates properly
+			dlog.WithField("provider", cloudType).Debug("Invalid cloud provider specified")
 		}
 	}
 }
